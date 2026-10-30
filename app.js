@@ -1,90 +1,123 @@
-const express = require('express');
-const cors = require('cors');
-const axios = require('axios');
-const app = express();
-app.use(cors({origin:'*'}));
-app.use(express.json());
+const express=require('express');const cors=require('cors');const app=express();
+app.use(cors());app.use(express.json());
+const KEY=process.env.MTNU||process.env.MTNUP2U_API_KEY||process.env.MTNU_||process.env.MTNUP2U;
+const PKEY=process.env.PAYS||process.env.PAYSTACK_SECRET_KEY||process.env.PAYSTACK;
 
-const PORT = process.env.PORT || 10000;
-const MTNUP2U_KEY = process.env.MTNUP2U_API_KEY;
-const PAYSTACK_SECRET = process.env.PAYSTACK_SECRET_KEY;
+app.get('/api/v1/products',(req,res)=>{res.json({data:{mtn:[{id:"mtn-1",label:"MTN 1GB",price:5.5,capacity_gb:1},{id:"mtn-2",label:"MTN 2GB",price:10.5,capacity_gb:2},{id:"mtn-3",label:"MTN 3GB",price:16,capacity_gb:3},{id:"mtn-4",label:"MTN 4GB",price:21,capacity_gb:4},{id:"mtn-5",label:"MTN 5GB",price:26,capacity_gb:5},{id:"mtn-10",label:"MTN 10GB",price:48,capacity_gb:10},{id:"mtn-20",label:"MTN 20GB",price:88,capacity_gb:20}],airteltigo:[{id:"at-1",label:"AT 1GB",price:5,capacity_gb:1}],telecel:[{id:"telecel-5",label:"Telecel 5GB",price:25,capacity_gb:5}]}})});
 
-// Fallback so site NEVER empty
-const FALLBACK = {
-  mtn: [
-    {id:"mtn-1",label:"MTN 1GB",price:5.5,capacity_gb:1},{id:"mtn-2",label:"MTN 2GB",price:11,capacity_gb:2},
-    {id:"mtn-3",label:"MTN 3GB",price:17.5,capacity_gb:3},{id:"mtn-5",label:"MTN 5GB",price:27,capacity_gb:5},
-    {id:"mtn-10",label:"MTN 10GB",price:45,capacity_gb:10},{id:"mtn-20",label:"MTN 20GB",price:85,capacity_gb:20},
-    {id:"mtn-30",label:"MTN 30GB",price:125,capacity_gb:30},{id:"mtn-50",label:"MTN 50GB",price:195,capacity_gb:50},
-    {id:"mtn-100",label:"MTN 100GB",price:380,capacity_gb:100}
-  ],
-  airteltigo: [
-    {id:"at-1",label:"AT 1GB",price:5,capacity_gb:1},{id:"at-5",label:"AT 5GB",price:23,capacity_gb:5},
-    {id:"at-10",label:"AT 10GB",price:42,capacity_gb:10},{id:"at-20",label:"AT 20GB",price:80,capacity_gb:20}
-  ],
-  telecel: [
-    {id:"tele-5",label:"Telecel 5GB",price:28,capacity_gb:5},{id:"tele-10",label:"Telecel 10GB",price:50,capacity_gb:10}
-  ]
-};
+app.get('/api/v1/status',(req,res)=>{res.json({ok:true,hasKey:!!KEY,hasPaystack:!!PKEY,time:new Date().toISOString()})});
 
-app.get('/', (req,res)=>res.json({status:"ok",hasKey:!!MTNUP2U_KEY,service:"masha-data-proxy-3-live-fixed",time:new Date().toISOString()}));
+app.post('/api/v1/order',async(req,res)=>{
+ try{
+  const phone=req.body.phone||req.body.phone_number||req.body.recipient;
+  const bundle=req.body.bundle_id||req.body.id;
+  const cap=req.body.capacity_gb||1;
+  const ref=req.body.reference||req.body.paystack_ref;
+  console.log("ORDER REQ:",{phone,bundle,cap,ref,body:req.body});
+  if(!KEY) return res.status(500).json({error:"MTNUP2U KEY missing in Render"});
+  if(!phone) return res.status(400).json({error:"phone missing"});
 
-app.get('/api/v1/products', async (req,res)=>{
-  try{
-    if(!MTNUP2U_KEY) return res.json({data:FALLBACK});
-
-    // Try many possible endpoints
-    const tries = [
-      `https://mtnup2u.com/api/products?api_key=${MTNUP2U_KEY}`,
-      `https://mtnup2u.com/api/v1/products?api_key=${MTNUP2U_KEY}`,
-      `https://mtnup2u.com/api/bundles?api_key=${MTNUP2U_KEY}`,
-      `https://mtnup2u.com/api/products/list?api_key=${MTNUP2U_KEY}`
-    ];
-    for(let url of tries){
+  // Try 3 possible mtnup2u endpoints (different versions use different URLs)
+  const payloads=[
+   {phone_number:phone,network:"mtn",volume:cap,bundle_id:bundle,reference:ref},
+   {phone:phone,network:"mtn",data_volume:cap,volume:cap,reference:ref},
+   {recipient:phone,network_id:1,size:cap}
+  ];
+  const urls=[
+   "https://mtnup2u.com/api/data",
+   "https://mtnup2u.com/api/v1/data/order",
+   "https://mtnup2u.com/api/v1/order"
+  ];
+  
+  let lastErr="";
+  for(let url of urls){
+    for(let payload of payloads){
       try{
-        const r = await axios.get(url,{timeout:8000});
-        if(r.data && (r.data.mtn || r.data.data || r.data.products)){
-          console.log("Success from:",url);
-          return res.json({data:r.data});
-        }
-      }catch(e){ console.log("Failed",url,e.message); }
+        console.log(`TRY ${url} PAYLOAD:`,JSON.stringify(payload));
+        let r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+KEY,"x-api-key":KEY,"api-key":KEY},body:JSON.stringify(payload)});
+        let txt=await r.text();
+        console.log(`RESP ${url} ${r.status}: ${txt.slice(0,500)}`);
+        if(r.ok){ return res.json({success:true,mtnup2u_url:url,mtnup2u_response:txt,reference:ref}); }
+        lastErr=`${url} ${r.status}: ${txt.slice(0,200)}`;
+      }catch(e){ lastErr=e.message; console.log("FETCH ERR",e.message); }
     }
-    // If all fail, return fallback so frontend still works
-    console.log("All MTNUP2U endpoints failed, returning fallback");
-    return res.json({data:FALLBACK});
-  }catch(e){
-    return res.json({data:FALLBACK});
   }
+  return res.status(502).json({error:"All mtnup2u endpoints failed",lastError:lastErr,note:"Check MTNUP2U API docs - key may need to be in different header or endpoint changed. See Render logs."});
+ }catch(e){ console.error(e); res.status(500).json({error:e.message});}
 });
 
-app.post('/api/v1/order', async (req,res)=>{
-  const {bundle_id,phone,reference} = req.body;
-  if(!bundle_id || !phone) return res.status(400).json({error:"bundle_id and phone required"});
-  console.log(`ORDER ${bundle_id} to ${phone} ref ${reference}`);
-
-  // Verify Paystack if secret set
-  if(PAYSTACK_SECRET && reference){
-    try{
-      const v = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`,{headers:{Authorization:`Bearer ${PAYSTACK_SECRET}`}});
-      console.log("Paystack verify:",v.data.data.status);
-    }catch(e){ console.log("Paystack verify error",e.message); }
-  }
-
-  // Try to send to MTNUP2U with many formats
-  if(MTNUP2U_KEY){
-    try{
-      const attempts = [
-        axios.post('https://mtnup2u.com/api/topup',{api_key:MTNUP2U_KEY,product_id:bundle_id,phone}),
-        axios.post('https://mtnup2u.com/api/order',{api_key:MTNUP2U_KEY,bundle_id,recipient:phone}),
-        axios.get(`https://mtnup2u.com/api/topup?api_key=${MTNUP2U_KEY}&product_id=${bundle_id}&phone=${phone}`)
-      ];
-      // We don't wait too long, just log
-      Promise.any(attempts).then(r=>console.log("MTNUP2U order success",r.data)).catch(e=>console.log("MTNUP2U order failed",e.message));
-    }catch(e){}
-  }
-
-  // Always return success so frontend shows success - you can deliver manually via mtnup2u website if auto fails
-  res.json({success:true,message:`Order ${bundle_id} for ${phone} received. If auto-delivery fails, please deliver manually from MTNUP2U dashboard. Ref: ${reference}`,manual_note:"Check MTNUP2U dashboard if not delivered in 2 mins"});
+app.post('/api/v1/refund',async(req,res)=>{
+ try{
+  const ref=req.body.reference||req.body.paystack_ref;
+  if(!PKEY) return res.status(500).json({error:"PAYSTACK_SECRET_KEY missing"});
+  let r=await fetch("https://api.paystack.co/refund",{method:"POST",headers:{Authorization:"Bearer "+PKEY,"Content-Type":"application/json"},body:JSON.stringify({transaction:ref})});
+  let txt=await r.text(); console.log(`REFUND ${ref} ${r.status}: ${txt}`);
+  if(!r.ok) return res.status(502).json({error:"Paystack refund failed",resp:txt});
+  res.json({success:true,refund:txt});
+ }catch(e){res.status(500).json({error:e.message});}
 });
 
-app.listen(PORT,()=>console.log("Fixed proxy running on "+PORT));
+app.get('/api/v1/order/status',(req,res)=>{res.json({status:"Check MTNUP2U app Activity. For refund POST /api/v1/refund",ref:req.query.reference});});
+
+app.listen(process.env.PORT||10000,()=>console.log("LIVE key="+!!KEY+" paystack="+!!PKEY));const express=require('express');const cors=require('cors');const app=express();
+app.use(cors());app.use(express.json());
+const KEY=process.env.MTNU||process.env.MTNUP2U_API_KEY||process.env.MTNU_||process.env.MTNUP2U;
+const PKEY=process.env.PAYS||process.env.PAYSTACK_SECRET_KEY||process.env.PAYSTACK;
+
+app.get('/api/v1/products',(req,res)=>{res.json({data:{mtn:[{id:"mtn-1",label:"MTN 1GB",price:5.5,capacity_gb:1},{id:"mtn-2",label:"MTN 2GB",price:10.5,capacity_gb:2},{id:"mtn-3",label:"MTN 3GB",price:16,capacity_gb:3},{id:"mtn-4",label:"MTN 4GB",price:21,capacity_gb:4},{id:"mtn-5",label:"MTN 5GB",price:26,capacity_gb:5},{id:"mtn-10",label:"MTN 10GB",price:48,capacity_gb:10},{id:"mtn-20",label:"MTN 20GB",price:88,capacity_gb:20}],airteltigo:[{id:"at-1",label:"AT 1GB",price:5,capacity_gb:1}],telecel:[{id:"telecel-5",label:"Telecel 5GB",price:25,capacity_gb:5}]}})});
+
+app.get('/api/v1/status',(req,res)=>{res.json({ok:true,hasKey:!!KEY,hasPaystack:!!PKEY,time:new Date().toISOString()})});
+
+app.post('/api/v1/order',async(req,res)=>{
+ try{
+  const phone=req.body.phone||req.body.phone_number||req.body.recipient;
+  const bundle=req.body.bundle_id||req.body.id;
+  const cap=req.body.capacity_gb||1;
+  const ref=req.body.reference||req.body.paystack_ref;
+  console.log("ORDER REQ:",{phone,bundle,cap,ref,body:req.body});
+  if(!KEY) return res.status(500).json({error:"MTNUP2U KEY missing in Render"});
+  if(!phone) return res.status(400).json({error:"phone missing"});
+
+  // Try 3 possible mtnup2u endpoints (different versions use different URLs)
+  const payloads=[
+   {phone_number:phone,network:"mtn",volume:cap,bundle_id:bundle,reference:ref},
+   {phone:phone,network:"mtn",data_volume:cap,volume:cap,reference:ref},
+   {recipient:phone,network_id:1,size:cap}
+  ];
+  const urls=[
+   "https://mtnup2u.com/api/data",
+   "https://mtnup2u.com/api/v1/data/order",
+   "https://mtnup2u.com/api/v1/order"
+  ];
+  
+  let lastErr="";
+  for(let url of urls){
+    for(let payload of payloads){
+      try{
+        console.log(`TRY ${url} PAYLOAD:`,JSON.stringify(payload));
+        let r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+KEY,"x-api-key":KEY,"api-key":KEY},body:JSON.stringify(payload)});
+        let txt=await r.text();
+        console.log(`RESP ${url} ${r.status}: ${txt.slice(0,500)}`);
+        if(r.ok){ return res.json({success:true,mtnup2u_url:url,mtnup2u_response:txt,reference:ref}); }
+        lastErr=`${url} ${r.status}: ${txt.slice(0,200)}`;
+      }catch(e){ lastErr=e.message; console.log("FETCH ERR",e.message); }
+    }
+  }
+  return res.status(502).json({error:"All mtnup2u endpoints failed",lastError:lastErr,note:"Check MTNUP2U API docs - key may need to be in different header or endpoint changed. See Render logs."});
+ }catch(e){ console.error(e); res.status(500).json({error:e.message});}
+});
+
+app.post('/api/v1/refund',async(req,res)=>{
+ try{
+  const ref=req.body.reference||req.body.paystack_ref;
+  if(!PKEY) return res.status(500).json({error:"PAYSTACK_SECRET_KEY missing"});
+  let r=await fetch("https://api.paystack.co/refund",{method:"POST",headers:{Authorization:"Bearer "+PKEY,"Content-Type":"application/json"},body:JSON.stringify({transaction:ref})});
+  let txt=await r.text(); console.log(`REFUND ${ref} ${r.status}: ${txt}`);
+  if(!r.ok) return res.status(502).json({error:"Paystack refund failed",resp:txt});
+  res.json({success:true,refund:txt});
+ }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.get('/api/v1/order/status',(req,res)=>{res.json({status:"Check MTNUP2U app Activity. For refund POST /api/v1/refund",ref:req.query.reference});});
+
+app.listen(process.env.PORT||10000,()=>console.log("LIVE key="+!!KEY+" paystack="+!!PKEY));
